@@ -1,0 +1,4 @@
+# This project only utilizes the Python standard library.
+# No external package dependencies are required to run the bot.
+#
+# Minimum required Python version: Python 3.9+ (due to the use of zone/datetime methods and ThreadPoolExecutor parameters)
