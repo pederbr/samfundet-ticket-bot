@@ -8,6 +8,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import webbrowser
@@ -15,6 +16,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import bot as botlib
 
@@ -42,6 +44,11 @@ if "threads" not in st.session_state:
     st.session_state.threads = []
 if "results" not in st.session_state:
     st.session_state.results = {}
+if "auto_opened" not in st.session_state:
+    # Tracks which results' checkout links we've already fired the client-side
+    # auto-open script for, so it doesn't re-fire (and pop a new tab) on every
+    # later rerun that re-renders the same result.
+    st.session_state.auto_opened = set()
 if "rows" not in st.session_state:
     st.session_state.rows = pd.DataFrame([DEFAULT_ROW])
 if "stop_event" not in st.session_state:
@@ -173,10 +180,20 @@ def run_bot(
         log_fn("Stripe checkout ready.", prefix)
     else:
         try:
-            webbrowser.open(checkout_url)
-            log_fn("Stripe checkout ready — opened in your browser.", prefix)
+            opened = webbrowser.open(checkout_url)
         except Exception as exc:
             log_fn(f"Stripe checkout ready, but couldn't auto-open browser: {exc}", prefix)
+        else:
+            if opened:
+                log_fn("Stripe checkout ready — opened in your browser.", prefix)
+            else:
+                # webbrowser.open() returns False on failure instead of raising,
+                # so this branch is the only way such a failure becomes visible.
+                log_fn(
+                    "Stripe checkout ready, but the browser-open command reported "
+                    "failure (no exception). Use the link below instead.",
+                    prefix,
+                )
 
     results[key] = {
         "event": config.event,
@@ -369,8 +386,25 @@ if st.session_state.results:
         event = res["event"]
         if res["status"] == "success":
             with st.container(border=True):
-                st.success(f"**{event}** — {res['selected']} · {res['total']} kr")
-                st.link_button("Open Stripe checkout", res["checkout_url"], use_container_width=True)
+                st.success(f"✅ **{event}** — {res['selected']} · {res['total']} kr")
+                st.link_button(
+                    "🔗 Open Stripe checkout",
+                    res["checkout_url"],
+                    use_container_width=True,
+                    type="primary",
+                )
+
+                if key not in st.session_state.auto_opened:
+                    st.session_state.auto_opened.add(key)
+                    # Best-effort client-side auto-open: only works if the
+                    # browser has popups allowed for this page — most browsers
+                    # block window.open() unless it's a direct response to a
+                    # user click, which finishing a background poll isn't. The
+                    # link button above is the reliable fallback either way.
+                    components.html(
+                        f"<script>window.open({json.dumps(res['checkout_url'])}, '_blank');</script>",
+                        height=0,
+                    )
         elif res["status"] == "stopped":
             st.warning(f"**{event}** — stopped.")
         else:
