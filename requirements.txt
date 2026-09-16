@@ -1,5 +1,12 @@
-# bot.py (CLI) only utilizes the Python standard library — no dependencies needed.
+# bot.py (CLI) uses only the Python standard library at runtime.
 # Minimum required Python version: Python 3.9+ (due to the use of zone/datetime methods and ThreadPoolExecutor parameters)
+#
+# tzdata: zoneinfo (used to hardcode Europe/Oslo for --wait-until, independent
+# of the host's own system timezone) needs a timezone database. macOS/Linux
+# normally have one installed at the OS level, but some minimal environments
+# (e.g. slim Docker images, some Windows setups) don't — this package supplies
+# one so zoneinfo always works regardless of the deployment target.
+tzdata
 #
 # streamlit_app.py (the Streamlit UI) additionally needs:
 streamlit>=1.30

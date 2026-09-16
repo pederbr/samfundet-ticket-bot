@@ -22,15 +22,21 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 from http.cookiejar import CookieJar
-from typing import Literal
+from typing import Callable, Literal
+from zoneinfo import ZoneInfo
 
 PAY_URL = "https://billettsalg.samfundet.no/pay"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 )
+
+# Samfundet is in Trondheim, Norway — hardcoded rather than read from the
+# server's system clock, since a deployed server may run in a different
+# timezone than the events (and users) this bot is for.
+TZ = ZoneInfo("Europe/Oslo")
 
 PriceType = Literal["member", "non-member", "auto"]
 
@@ -62,8 +68,15 @@ class BotConfig:
     no_browser: bool = False
 
 
-# Global event to signal all threads to exit immediately on interrupt
+# Global event to signal all threads to exit immediately on interrupt.
+# Used as the default for CLI runs (one process = one run, so a single shared
+# event is fine there). Callers that manage multiple independent, concurrent
+# runs in one process — e.g. a multi-session web UI — must pass their own
+# per-run stop_event and log_fn explicitly instead of relying on these
+# module-level defaults, or runs will cross-signal and cross-log each other.
 stop_event = threading.Event()
+
+LogFn = Callable[[str, str], None]
 
 
 def log(msg: str, prefix: str = "") -> None:
@@ -153,21 +166,27 @@ def pick_price_group(
     return groups[0]
 
 
-def wait_until(target: datetime, prefix: str = "") -> None:
+def wait_until(
+    target: datetime,
+    prefix: str = "",
+    *,
+    log_fn: LogFn = log,
+    stop_event: threading.Event = stop_event,
+) -> None:
     while not stop_event.is_set():
-        now = datetime.now()
+        now = datetime.now(TZ)
         if now >= target:
             return
         remaining = (target - now).total_seconds()
         if remaining > 60:
-            log(f"Waiting… {int(remaining)}s until {target.strftime('%H:%M:%S')}", prefix)
+            log_fn(f"Waiting… {int(remaining)}s until {target.strftime('%H:%M:%S')}", prefix)
             sleep_time = min(30, remaining - 30)
             for _ in range(int(sleep_time * 2)):
                 if stop_event.is_set():
                     return
                 time.sleep(0.5)
         elif remaining > 5:
-            log(f"Waiting… {remaining:.0f}s", prefix)
+            log_fn(f"Waiting… {remaining:.0f}s", prefix)
             for _ in range(2):
                 if stop_event.is_set():
                     return
@@ -184,9 +203,11 @@ def poll_buy_page(
     poll_interval: float,
     max_attempts: int | None,
     prefix: str = "",
+    log_fn: LogFn = log,
+    stop_event: threading.Event = stop_event,
 ) -> BuyForm:
     if wait_until_time:
-        wait_until(wait_until_time, prefix)
+        wait_until(wait_until_time, prefix, log_fn=log_fn, stop_event=stop_event)
         if stop_event.is_set():
             raise InterruptedError("Stopped")
 
@@ -196,7 +217,7 @@ def poll_buy_page(
         try:
             html = fetch(opener, url)
         except urllib.error.HTTPError as exc:
-            log(f"HTTP {exc.code} — retrying…", prefix)
+            log_fn(f"HTTP {exc.code} — retrying…", prefix)
             for _ in range(int(poll_interval * 4)):
                 if stop_event.is_set():
                     raise InterruptedError("Stopped")
@@ -205,7 +226,7 @@ def poll_buy_page(
                 time.sleep(poll_interval % 0.25)
             continue
         except urllib.error.URLError as exc:
-            log(f"Network error: {exc.reason} — retrying…", prefix)
+            log_fn(f"Network error: {exc.reason} — retrying…", prefix)
             for _ in range(int(poll_interval * 4)):
                 if stop_event.is_set():
                     raise InterruptedError("Stopped")
@@ -219,8 +240,8 @@ def poll_buy_page(
             return form
 
         if attempts == 1:
-            log("Buy page not open yet — polling…", prefix)
-        
+            log_fn("Buy page not open yet — polling…", prefix)
+
         for _ in range(int(poll_interval * 4)):
             if stop_event.is_set():
                 raise InterruptedError("Stopped")
@@ -283,7 +304,8 @@ def parse_wait_until(value: str) -> datetime:
     for fmt in ("%H:%M:%S", "%H:%M"):
         try:
             parsed = datetime.strptime(value, fmt)
-            return datetime.combine(date.today(), parsed.time())
+            today = datetime.now(TZ).date()
+            return datetime.combine(today, parsed.time(), tzinfo=TZ)
         except ValueError:
             continue
     raise argparse.ArgumentTypeError(f"Invalid time: {value!r} (use HH:MM or HH:MM:SS)")

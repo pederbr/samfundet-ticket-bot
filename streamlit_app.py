@@ -44,25 +44,28 @@ if "results" not in st.session_state:
     st.session_state.results = {}
 if "rows" not in st.session_state:
     st.session_state.rows = pd.DataFrame([DEFAULT_ROW])
+if "stop_event" not in st.session_state:
+    # A per-session Event, never bot.py's module-level default — that one is
+    # a single object shared by every session in this process, so using it
+    # would let one browser tab's Stop button halt every other tab's bots too.
+    st.session_state.stop_event = threading.Event()
 
 
-# Background threads have no Streamlit ScriptRunContext, so they can't touch
-# st.session_state. Streamlit also re-executes this whole file's top level on
-# every rerun, so a plain module-level variable here gets reset each time and
-# can't hold a reference a background thread relies on. `botlib` (sys.modules
-# entry for bot.py), by contrast, is cached by Python for the life of the
-# process — so we stash the current run's queue as an attribute on it instead.
-def queue_log(msg: str, prefix: str = "") -> None:
-    q = getattr(botlib, "_log_queue", None)
-    if q is None:
-        return
-    prefix_part = f"[{prefix}] " if prefix else ""
-    for line in msg.splitlines():
-        q.put(f"{prefix_part}{line}")
+def make_log_fn(log_queue: queue.Queue) -> botlib.LogFn:
+    """Build a log function bound to one run's own queue via closure.
 
+    Deliberately not routed through any module-level/global state: this app
+    can serve multiple concurrent browser sessions from one process, and
+    bot.py's functions only see whatever log_fn/stop_event we pass in — so
+    each run's log output and Stop button stay isolated to its own session.
+    """
 
-# Redirect the bot module's logging into our queue so it shows up live in the UI.
-botlib.log = queue_log
+    def log_fn(msg: str, prefix: str = "") -> None:
+        prefix_part = f"[{prefix}] " if prefix else ""
+        for line in msg.splitlines():
+            log_queue.put(f"{prefix_part}{line}")
+
+    return log_fn
 
 
 def build_config(row: dict) -> botlib.BotConfig:
@@ -111,11 +114,17 @@ def build_config(row: dict) -> botlib.BotConfig:
     )
 
 
-def run_bot(key: str, config: botlib.BotConfig, results: dict) -> None:
+def run_bot(
+    key: str,
+    config: botlib.BotConfig,
+    results: dict,
+    log_fn: botlib.LogFn,
+    stop_event: threading.Event,
+) -> None:
     prefix = config.event
     url = botlib.buy_url(config.event)
     opener = botlib.build_opener()
-    botlib.log(f"Event buy page: {url}", prefix)
+    log_fn(f"Event buy page: {url}", prefix)
 
     try:
         form = botlib.poll_buy_page(
@@ -125,23 +134,25 @@ def run_bot(key: str, config: botlib.BotConfig, results: dict) -> None:
             poll_interval=config.poll_interval,
             max_attempts=config.max_attempts,
             prefix=prefix,
+            log_fn=log_fn,
+            stop_event=stop_event,
         )
     except InterruptedError:
-        botlib.log("Interrupted.", prefix)
+        log_fn("Interrupted.", prefix)
         results[key] = {"event": config.event, "status": "stopped"}
         return
     except Exception as exc:
-        botlib.log(f"Error while polling: {exc}", prefix)
+        log_fn(f"Error while polling: {exc}", prefix)
         results[key] = {"event": config.event, "status": "error", "message": str(exc)}
         return
 
-    botlib.log("Price groups:", prefix)
+    log_fn("Price groups:", prefix)
     for pg in form.price_groups:
-        botlib.log(f"  {pg.label}: {pg.price} kr ({pg.field_name})", prefix)
+        log_fn(f"  {pg.label}: {pg.price} kr ({pg.field_name})", prefix)
 
     selected = botlib.pick_price_group(form.price_groups, config.price_type)
     total = selected.price * config.count
-    botlib.log(f"Selected: {selected.label} × {config.count} ({total} kr)", prefix)
+    log_fn(f"Selected: {selected.label} × {config.count} ({total} kr)", prefix)
 
     try:
         checkout_url = botlib.submit_purchase(
@@ -154,18 +165,18 @@ def run_bot(key: str, config: botlib.BotConfig, results: dict) -> None:
             membercard=config.membercard,
         )
     except Exception as exc:
-        botlib.log(f"Purchase submission failed: {exc}", prefix)
+        log_fn(f"Purchase submission failed: {exc}", prefix)
         results[key] = {"event": config.event, "status": "error", "message": str(exc)}
         return
 
     if config.no_browser:
-        botlib.log("Stripe checkout ready.", prefix)
+        log_fn("Stripe checkout ready.", prefix)
     else:
         try:
             webbrowser.open(checkout_url)
-            botlib.log("Stripe checkout ready — opened in your browser.", prefix)
+            log_fn("Stripe checkout ready — opened in your browser.", prefix)
         except Exception as exc:
-            botlib.log(f"Stripe checkout ready, but couldn't auto-open browser: {exc}", prefix)
+            log_fn(f"Stripe checkout ready, but couldn't auto-open browser: {exc}", prefix)
 
     results[key] = {
         "event": config.event,
@@ -184,13 +195,16 @@ def start_run(configs: dict[str, botlib.BotConfig]) -> None:
 
     log_queue: queue.Queue = queue.Queue()
     st.session_state.log_queue = log_queue
-    botlib._log_queue = log_queue
+    log_fn = make_log_fn(log_queue)
 
-    botlib.stop_event.clear()
+    stop_event = threading.Event()
+    st.session_state.stop_event = stop_event
 
     threads = []
     for key, config in configs.items():
-        t = threading.Thread(target=run_bot, args=(key, config, results), daemon=True)
+        t = threading.Thread(
+            target=run_bot, args=(key, config, results, log_fn, stop_event), daemon=True
+        )
         threads.append(t)
     st.session_state.threads = threads
     st.session_state.running = True
@@ -219,7 +233,9 @@ if not st.session_state.running:
         wait_enabled = st.checkbox("Wait until a specific time before polling")
         wait_time = None
         if wait_enabled:
-            wait_time = st.time_input("Wait until (local time)")
+            wait_time = st.time_input(
+                "Wait until (Norwegian time)", value=datetime.now(botlib.TZ).time()
+            )
 
         ticket_type = st.radio("Ticket type", ["Email", "Member card"], horizontal=True)
 
@@ -317,7 +333,7 @@ if not st.session_state.running:
 else:
     st.info("Bot(s) running — see the live log below.")
     if st.button("⏹ Stop", use_container_width=True):
-        botlib.stop_event.set()
+        st.session_state.stop_event.set()
         st.session_state.running = False
         st.rerun()
 
