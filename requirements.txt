@@ -9,5 +9,6 @@
 tzdata
 #
 # streamlit_app.py (the Streamlit UI) additionally needs:
-streamlit>=1.30
+# streamlit>=1.56 for st.iframe (used for the best-effort checkout auto-open)
+streamlit>=1.56
 pandas>=2.0

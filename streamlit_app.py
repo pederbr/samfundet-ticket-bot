@@ -16,7 +16,6 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 import bot as botlib
 
@@ -401,9 +400,9 @@ if st.session_state.results:
                     # block window.open() unless it's a direct response to a
                     # user click, which finishing a background poll isn't. The
                     # link button above is the reliable fallback either way.
-                    components.html(
+                    st.iframe(
                         f"<script>window.open({json.dumps(res['checkout_url'])}, '_blank');</script>",
-                        height=0,
+                        height=1,
                     )
         elif res["status"] == "stopped":
             st.warning(f"**{event}** — stopped.")
