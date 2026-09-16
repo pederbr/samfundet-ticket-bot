@@ -1,4 +1,6 @@
-# This project only utilizes the Python standard library.
-# No external package dependencies are required to run the bot.
-#
+# bot.py (CLI) only utilizes the Python standard library — no dependencies needed.
 # Minimum required Python version: Python 3.9+ (due to the use of zone/datetime methods and ThreadPoolExecutor parameters)
+#
+# streamlit_app.py (the Streamlit UI) additionally needs:
+streamlit>=1.30
+pandas>=2.0

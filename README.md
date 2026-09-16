@@ -83,3 +83,23 @@ The configuration must be a JSON array of bot objects. Each bot configuration ha
 - **Thread-safe logging**: Output is prefixed with each bot's event ID (e.g. `[5423-toga] Waiting… 59s`) to prevent logs from interleaving.
 - **Global override**: You can add `--no-browser` to the command line to prevent *all* bots in the configuration from launching browsers simultaneously when checkout is ready.
 - **Ctrl+C Grace**: Main process will notify and exit all active threads immediately.
+
+---
+
+## 3. Streamlit App (GUI)
+
+A browser-based UI is also available, built on top of the same bot logic in `bot.py`.
+
+### Install and run
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+### Features
+- **Simple mode**: a single-bot form (event, email/member card, price type, count, optional wait time) — the default view.
+- **Parallel mode**: toggle "Run multiple bots in parallel" to switch to a spreadsheet-style table for configuring several bots at once, just like `config.json`.
+- **Live log**: streams the bot's progress in real time while it polls.
+- **Auto-open checkout**: opens the Stripe checkout in your browser automatically when ready (toggle under "Advanced settings" to disable and just get a link instead).
+- **Stop button**: cancels running bot(s) immediately.
